@@ -1,0 +1,138 @@
+---
+title: "Final Project Analysis Classification"
+output: html_notebook
+author: "Jason Booth"
+---
+
+In this section, several classification algorithms will be applied the survey from 2011 to see if there is a classifiable relationship between survey responses and these categories. These models will be run only on the 2011 dataset because it has the most data of the surveys collected. Each model will be tuned and then compared against each other in terms of accuracy to see which one is the best fit.
+
+Read data from CSV file.
+```{r}
+happyData11 <- read.csv("C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData11.csv")
+happyData11
+```
+
+Use exploratory graphs to visualize disributions of marital status factor variable. At first glance it doesn't appear that there is a clear classification.
+```{r}
+plot(happyData11$how_similar_are_you_to_other_people_you_know_2011, happyData11$how_satisfied_are_you_with_your_life_in_general, col=happyData11$marital_status_2011)
+plot(happyData11$how_happy_do_you_feel_right_now, happyData11$effectiveness_of_the_local_police_2011_2013, col=happyData11$marital_status_2011)
+```
+
+
+The dataset is reduced to only numeric features and normalized using the caret package. Normalization before feeding the data into a model is important because some models are sensitive to dispairities in scale of different features. For example, KNN uses Eauclidean distance for classification, and if one feature is much larger than another, it can become dominant in deciding classification of points.
+```{r}
+library(caret)
+normalizedHappyData11Features <- subset(happyData11, select=-c(race, gender_2011, marital_status_2011))
+normalizedHappyData11Features <- predict(preProcess(normalizedHappyData11Features, method = "range"), normalizedHappyData11Features)
+happyData11Labels <- happyData11$marital_status_2011
+normalizedHappyData11Features
+```
+
+Next, PCA is used to reduce the dimensionality of our data. PCA is often used when there are thousands of different features in a dataset and you would like to reduce them to only features that really differ. Although it is not really necessary to perform in this case, it is used as an exercise to get used to the mechanics of implementation. 
+
+PCA works by projecting the original features onto a smaller dimensional space made up of combinations of the original features. The plot below shows how significant each new vector is in determining the variation of the data after the projection. If a feature contains little variation, it can be eliminated without losing much information about the data.
+```{r}
+pcaFit <- princomp(normalizedHappyData11Features)
+summary(pcaFit)
+screeplot(pcaFit, type="lines")
+```
+
+Based on the above plot, there appears to be a dropoff after the 9th component. These components are used to transform the original data into a new, lower dimensional space without losing much information about the original data.
+```{r}
+topNineComponents = pcaFit$loadings[,1:9]
+pcaHappyDataFeatures <- as.data.frame(as.matrix(normalizedHappyData11Features) %*% topNineComponents)
+pcaHappyDataFeatures
+```
+
+Split up the data into training and testing subsets. An 80 - 20 split is used.
+```{r}
+splitInidicies <- createDataPartition(y = pcaHappyDataFeatures$Comp.1, p= 0.8, list = FALSE)
+training <- pcaHappyDataFeatures[splitInidicies,]
+testing <- pcaHappyDataFeatures[-splitInidicies,]
+trainingLabels <- happyData11[splitInidicies, "marital_status_2011"]
+testingLabels <- happyData11[-splitInidicies, "marital_status_2011"]
+nrow(training)
+nrow(testing)
+```
+
+To build and test each model we will use the caret package. This package exposes a really nice API which will tune the hyper-parameters of each model for you using cross-validation. Then we are able to test the models against each other using our test set.
+
+This model creates and trains a knn model using 10 fold cross validation and 10 separate tries for k. A plot of the tuning of the value for k can be seen below.
+```{r}
+knnCtrl <- trainControl(method = "cv", number = 10)
+knnFit <- train(training, trainingLabels, method = "knn",
+ trControl=knnCtrl,
+ tuneLength = 10) # number of k's to use
+knnFit
+plot(knnFit)
+```
+
+Next a naive bayes model is fit to the data. There is not the same concept of hyperparameters in this model, just one tuning parameter that is changed during training called a kernel. When we covered NB in class we discussed discretizing continuous data so that it could be put into a Naive Bayes model. Another method is to estimate a continuous distribution for the prior distribution using something called KDE or Kernel Density Estimation. Essentially this will assign each point a small normal distribution and smooth them out into a total continuous distribution that can sometimes approximate better than a histogram. In this case, it appears that using a kernel has slightly better performance.
+```{r}
+nbCtrl <- trainControl(method = "cv", number = 10)
+nbFit <- train(training, trainingLabels, method = "naive_bayes",
+ trControl=nbCtrl)
+nbFit
+plot(nbFit)
+```
+
+SVM is another classification algorithm that creates a decision "hyperplane" between sections of your data. A linear svm will attempt to find a linear decision boundary, which approximates the global best decision boundary for the model. There is a parameter of the model called C which is essentially the amount of cost assigned to each mislabeled point. One downside of SVM is that it can take a long time to train. Because of this I reduced the size of the cross-validation to 3 instead of 5, and only tuned on 3 values of the c variable.
+```{r}
+grid <- expand.grid(C = c(0.25, 0.5, 1))
+svmCtrl <- trainControl(method = "cv", number = 5)
+svmFit <- train(training, trainingLabels, method = "svmLinear",
+ trControl=svmCtrl,
+ tuneGrid = grid,
+ tuneLength = 3)
+svmFit
+plot(svmFit)
+```
+
+Another form of svm called radial SVM uses a non-linear decision boundary. This form will project the data into a higher dimensional space, create a hyperplane in that space diving your data, and then project down the decision boundary onto the original space. The same approach was used to reduce the cross-validation size and tuning length for performance reasons.
+```{r}
+svmRadCtrl <- trainControl(method = "cv", number = 5)
+svmRadFit <- train(training, trainingLabels, method = "svmRadial",
+ trControl=svmRadCtrl,
+ tuneLength = 3)
+svmRadFit
+plot(svmRadFit)
+```
+
+If svm fits the data well, there should be a small number of "support vectors" which influence the decision boundary. As we can see below, the number of support vector is quite high, which shows that the models are probably not a good fit for the data.
+```{r}
+svmFit$finalModel
+svmRadFit$finalModel
+```
+
+One last method of classification is used as a practice exercise, although it will not be used on the testing data. A decision tree is unique among other classifiers because it is very interpretable and can lead to discoveries about the data that were unknown. It creates a tree of decision boundaries for each feature leading to a classification leaf at the bottom of each branch. Below, a tree is created on the non-normalized, non-pca data and printed to see what the tree might look like. Although some of these values like age and income are ordinal and don't hold physical meaning, it can be seen how a model like this would be useful. 
+```{r}
+# Commented out for the graders convenience
+# install.packages("tree")
+library(tree)
+regTreeModel <- tree(marital_status_2011 ~ . - race - gender_2011, data=happyData11)
+plot(regTreeModel); text(regTreeModel)
+```
+
+After the models have been created and trained using cross-validation, the test dataset is used to determine the final accuracy of each model. 
+```{r}
+knnPred <- predict(knnFit, testing)
+confusionMatrix(knnPred, testingLabels)
+```
+
+```{r}
+nbPred <- predict(nbFit, testing)
+confusionMatrix(nbPred, testingLabels)
+```
+
+```{r}
+svmPred <- predict(svmFit, testing)
+confusionMatrix(svmPred, testingLabels)
+```
+
+```{r}
+svmRadPred <- predict(svmRadFit, testing)
+confusionMatrix(svmRadPred, testingLabels)
+```
+
+
+Overall there is not a clear winner in terms of which model performed best. All models were around 55-60% performant in terms of predicting marital status for the test dataset. This shows that there is probably not a clear correlation between marital status and responses on the survey. Despite the bad results, this was a great exercise in learning new api's and exploring a real-world machine learning application.

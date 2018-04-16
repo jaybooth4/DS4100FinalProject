@@ -1,0 +1,246 @@
+---
+title: "Final Project"
+output: html_notebook
+author: "Jason Booth"
+---
+
+In this file, the survey data is loaded from an API, cleaned, and written to csv files. Derived features are created, missing values are imputed, and string parsing is used to put the data in an analyzable format for the next stages.
+
+
+Load Data via API. In this call you need to set the limit param for number of entries to read, default is 1000, so I used 6545 to read in the whole dataset.
+```{r}
+# Commented for graders convenience
+# install.packages("jsonlite")
+library(jsonlite)
+happyData <- fromJSON("https://data.somervillema.gov/resource/gx6r-bw3n.json?$limit=6545") 
+happyData
+```
+
+
+Column name string reduction. Get rid of unneccessary parts of column headers that are part of the questions on the survey.
+```{r}
+unnecessaryPrependedColumns <- c("how_would_you_rate_the_following_the_", "what_is_your_", "in_general_", "describe_your_", "do_you_have_", "do_you_plan_to_", "are_you_of_", "when_making_decisions_are_you_more_likely_to_")
+prependedRegex <- paste(unnecessaryPrependedColumns, collapse="|") # Regex to search for these substrings
+colnames(happyData) <- gsub(prependedRegex, "", names(happyData)) # Replace regex matches with an empty string.
+```
+
+NA cleaning: The library jsonlite doesn't support string parsing directly from JSON for NA values. We need to explicitly convert from string "NA" to NA values. There are also R values which are present in many columns, which I believe to mean refusal to answer the question. There is no description of these values, so I decided to make them NA's too.
+```{r}
+happyData[happyData == "NA" | happyData == "R" | happyData == "NULL"] <- NA
+```
+
+When the data was parsed from JSON, it converted all of the fields to strings. For imputation and outlier removal steps, these fields must be converted to numeric values. In this case it was easier to specify all columns that were not numeric explicitly, because there are fewer of them.
+```{r}
+nonNumericCols <- c("age","are_you_a_student", "housing_status_in_somerville", "children_age_18_or_younger_who_live_with_you", "move_away_from_somerville_in_the_next_two_years", "how_long_have_you_lived_here", "marital_status_2011", "precint", "ward", "annual_household_income", "gender_2011", "race_2011_2013", "race_or_ethnicity_2015", "hispanic_latino_or_spanish_origin_2013", "combined_id", "what_neighborhood_do_you_live_in", "what_language_other_than_english_do_you_speak_at_home_2015", "sex")
+columns <- colnames(happyData)
+numericCols <- columns[!columns %in% nonNumericCols]
+happyData[numericCols] <- sapply(happyData[numericCols], as.numeric)
+```
+
+There are two separate columns that have to do with race with a total of 43 different factors for each persons background. These should be simplified so that analysis on race can be done with fewer categories and a single column.
+```{r}
+c(unique(happyData$race_2011_2013), unique(happyData$race_or_ethnicity_2015))
+```
+
+
+Creation of a single column race with 6 individual factors: White, Black/African American, Mixed, Asian/Pacific Islander, Hispanic / Latino, Native American, and Other.
+```{r}
+happyData["race"] <- happyData$race_2011_2013
+
+happyData[is.na(happyData$race), "race"] <- happyData[is.na(happyData$race), "race_or_ethnicity_2015"]
+
+happyData[is.na(happyData$race), "race"] <- "Unknown"
+
+blackCondition <- happyData$race %in% c("Black / African American, Other", "Black / African American", "African-American")
+happyData[blackCondition, "race"] <- "Black/African American"
+
+mixedCondition <- happyData$race %in% c("White, Hispanic / Latino", "White, Asian", "White, Persian", "White, Black/African American", "White, Black / African American", "White, Other", "White, Black/African American, Asian", "White, Hispanic Origin", "Black/African American, Native American", "White, non-Hispanic, Asian/Pacific Islander", "White, non-Hispanic, Native American", "White, non-Hispanic, White, Hispanic Origin", "White, Hispanic Origin, Hispanic", "Hispanic, Native American", "White, non-Hispanic, African-American", "White, non-Hispanic, White, Hispanic Origin, Hispanic, Native American", "White, non-Hispanic, Hispanic", "White, Hispanic Origin, Asian/Pacific Islander", "White, non-Hispanic, African-American, Native American", "White, non-Hispanic, White, Hispanic Origin, African-American, Hispanic, Asian/Pacific Islander, Native American", "African-American, Asian/Pacific Islander", "White, non-Hispanic, White, Hispanic Origin, African-American, Hispanic", "Hispanic, Asian/Pacific Islander", "African-American, Hispanic", "Unknown", "Other")
+happyData[mixedCondition, "race"] <- "Mixed"
+
+nativeAmericanCondition <- happyData$race %in% c("American Indian")
+happyData[nativeAmericanCondition, "race"] <- "Native American"
+
+hispanicCondition <- happyData$race %in% c("Hispanic")
+happyData[hispanicCondition, "race"] <- "Hispanic / Latino"
+
+asianCondition <- happyData$race %in% c("Asian", "Asian, Other")
+happyData[asianCondition, "race"] <- "Asian/Pacific Islander"
+
+whiteCondition <- happyData$race %in% c("White, non-Hispanic")
+happyData[whiteCondition, "race"] <- "White"
+
+happyData <- subset(happyData, select = -c(race_2011_2013, race_or_ethnicity_2015, hispanic_latino_or_spanish_origin_2013))
+
+unique(happyData$race)
+```
+
+
+Get rid of unwanted columns. These either have many unique categories or are not interesting for the analysis. Wards geographically split up Somerville, and then precincts are subsets of wards. So grouping just on precincts has no phisical meaning. However, using wards is still a valid way to do geographical analysis. Also, combined_id is unique for each entry and not useful for analysis.
+```{r}
+length(unique(happyData$what_language_other_than_english_do_you_speak_at_home_2015))
+length(unique(happyData$what_neighborhood_do_you_live_in))
+happyData <- subset(happyData, select = -c(combined_id, what_neighborhood_do_you_live_in, what_language_other_than_english_do_you_speak_at_home_2015, precinct))
+```
+
+
+Each year had different survey questions and methods of answering them. Although race was combined across surveys, it is impossible to combine other common columns because they have overlapping bounds. Two of these are shown below, where annual_household_income and age overlap among categories. Instead, the dataframe will be broken up by year, and these common questions will converted to ordinal values so that they can be directly compared.
+```{r}
+unique(happyData$annual_household_income)
+unique(happyData$age)
+```
+
+
+Split the dataframe into 3 separate frame by years. Only preserve columns where there is at least one none NA column. Columns that are fully NA correspond to a question that was not asked in that year.
+```{r}
+happyDataSubset11 <- happyData[happyData$year == 2011,]
+happyDataSubset13 <- happyData[happyData$year == 2013,]
+happyDataSubset15 <- happyData[happyData$year == 2015,]
+
+happyDataSubset11 <- happyDataSubset11[, colSums(is.na(happyDataSubset11)) < nrow(happyDataSubset11)]
+happyDataSubset13 <- happyDataSubset13[, colSums(is.na(happyDataSubset13)) < nrow(happyDataSubset13)]
+happyDataSubset15 <- happyDataSubset15[, colSums(is.na(happyDataSubset15)) < nrow(happyDataSubset15)]
+happyDataSubset11 <- subset(happyDataSubset11, select = -c(year))
+happyDataSubset13 <- subset(happyDataSubset13, select = -c(year))
+happyDataSubset15 <- subset(happyDataSubset15, select = -c(year))
+```
+
+Explicitly list the unique levels for each survey for each overlapping column, convert them into an ordered factor, and then back to a numeric value. This way, because the values are purely numeric, they can be compared across dataframes.
+```{r}
+ageLevels11 <- c("18-21", "22-25", "26-30", "31-40", "41-50", "51-60", "61+")
+ageLevels1315 <- c("18-24", "25-34", "35-44", "45-54", "55-64", "65-74", "75 or older")
+happyDataSubset11$age <- as.numeric(factor(happyDataSubset11$age, levels=ageLevels11))
+happyDataSubset13$age <- as.numeric(factor(happyDataSubset13$age, levels=ageLevels1315))
+happyDataSubset15$age <- as.numeric(factor(happyDataSubset15$age, levels=ageLevels1315))
+ 
+incomeLevels11 <- c("Less than $10,000", "10,000 - $19,999", "20,000 - $29,999", "30,000 - $39,999", "40,000 - $49,999", "50,000 - $59,999", "60,000 - $69,999", "70,000 - $79,999", "80,000 - $89,999", "90,000 - $99,999", "100,000 and up")
+incomeLevels1315 <- c("Less than $10,000", "$10,000 to $24,999", "$25,000 to $49,999", "$50,000 to $74,999", "$75,000 to $99,999", "$100,000 to $149,999", "$150,000 or more")
+happyDataSubset11$annual_household_income <- as.numeric(factor(happyDataSubset11$annual_household_income, levels=incomeLevels11))
+happyDataSubset13$annual_household_income <- as.numeric(factor(happyDataSubset13$annual_household_income, levels=incomeLevels1315))
+happyDataSubset15$annual_household_income <- as.numeric(factor(happyDataSubset15$annual_household_income, levels=incomeLevels1315))
+
+livedHereLevels11 <- c("0-5 Years", "6-11 Years", "12-17 Years", "18+")
+livedHereLevels1315 <- c("Less than a year", "1-3 years", "4-7 years", "8-10 years", "11-15 years", "16-20 years", "21 years or more")
+happyDataSubset11$how_long_have_you_lived_here <- as.numeric(factor(happyDataSubset11$how_long_have_you_lived_here, levels=livedHereLevels11))
+happyDataSubset13$how_long_have_you_lived_here <- as.numeric(factor(happyDataSubset13$how_long_have_you_lived_here, levels=livedHereLevels1315))
+happyDataSubset15$how_long_have_you_lived_here <- as.numeric(factor(happyDataSubset15$how_long_have_you_lived_here, levels=livedHereLevels1315))
+```
+
+
+Some columns have uppercase and lower case values for yes and no. Regularize them to Yes, No, or Unknown. These columns were only present in the 2013 and 2015 surveys.
+```{r}
+# Convert NA values to Unknown, lower case no/yes -> No/Yes
+# Inputs: dataframe, name of column to apply function to
+# Outputs: dataframe with correct values
+combineYN <- function(happyDF, colname) {
+  happyDF[is.na(happyDF[colname]), colname] <- "Unknown"
+  happyDF[happyDF[colname] == "no", colname] <- "No"
+  happyDF[happyDF[colname] == "yes", colname] <- "Yes"
+  happyDF
+}
+happyDataSubset13 <- combineYN(happyDataSubset13, "are_you_a_student")
+happyDataSubset15 <- combineYN(happyDataSubset15, "are_you_a_student")
+happyDataSubset13 <- combineYN(happyDataSubset13, "children_age_18_or_younger_who_live_with_you")
+happyDataSubset15 <- combineYN(happyDataSubset15, "children_age_18_or_younger_who_live_with_you")
+happyDataSubset13 <- combineYN(happyDataSubset13, "move_away_from_somerville_in_the_next_two_years")
+happyDataSubset15 <- combineYN(happyDataSubset15, "move_away_from_somerville_in_the_next_two_years")
+```
+
+Next, numeric missing values will be imputed. Columns across surveys with the most missing values are shown below. Overall quality of public schools seems to have the most missing values across surveys (upwards of 30%). Because of this I decided to remove the column from the analysis. All other columns have missing values of less than 20%.
+```{r}
+sort(sapply(happyDataSubset11, function(x) sum(is.na(x)) / length(x)), decreasing=TRUE)
+sort(sapply(happyDataSubset13, function(x) sum(is.na(x)) / length(x)), decreasing=TRUE)
+sort(sapply(happyDataSubset15, function(x) sum(is.na(x)) / length(x)), decreasing=TRUE)
+happyDataSubset11 <- subset(happyDataSubset11, select = -c(overall_quality_of_public_schools_in_your_community_2011))
+happyDataSubset13 <- subset(happyDataSubset13, select = -c(overall_quality_of_public_schools))
+happyDataSubset15 <- subset(happyDataSubset15, select = -c(overall_quality_of_public_schools))
+```
+
+
+I decided to impute missing values and outlying data with the mean of the column. In this case an outlier is a point which is outside of the bounds of the survey question. There are very few of these entries, but they are important to catch because they could disrupt predictive models. Outlying entries for the surveys are shown below.
+```{r}
+numericCols11 <- names(which(sapply(happyDataSubset11, is.numeric) == TRUE))
+sapply(happyDataSubset11[numericCols11], function(x) sum(x > 10, na.rm=TRUE))
+numericCols13 <- names(which(sapply(happyDataSubset13, is.numeric) == TRUE))
+sapply(happyDataSubset13[numericCols13], function(x) sum(x > 10, na.rm=TRUE))
+numericCols15 <- names(which(sapply(happyDataSubset15, is.numeric) == TRUE))
+sapply(happyDataSubset15[numericCols15], function(x) sum(x > 10, na.rm=TRUE))
+```
+
+Impute missing/outlier numeric values with mean of the column.
+```{r}
+# Function to impute missing values in a column with the average value
+# Inputs: dataframe, list of numeric columns
+# Output: dataframe
+imputeAverages <- function(happyFrame, numericCols) {
+  for (col in numericCols) {
+    happyFrame[is.na(happyFrame[,col]), col] <- mean(happyFrame[,col], na.rm=TRUE)
+    happyFrame[happyFrame[,col] > 10, col] <- mean(happyFrame[,col], na.rm=TRUE)
+  }
+  happyFrame
+}
+
+happyDataSubset11 <- imputeAverages(happyDataSubset11, numericCols11)
+happyDataSubset13 <- imputeAverages(happyDataSubset13, numericCols13)
+happyDataSubset15 <- imputeAverages(happyDataSubset15, numericCols15)
+```
+
+Some character columns have "Unknown" values. There are few of these, no more than 13 in a single row, but they should be imputed so that they don't represent a new categorical factor.
+```{r}
+charCols11 <- names(which(sapply(happyDataSubset11, is.numeric) == FALSE))
+sapply(happyDataSubset11[charCols11], function(x) sum(x == "Unknown", na.rm=TRUE))
+charCols13 <- names(which(sapply(happyDataSubset13, is.numeric) == FALSE))
+sapply(happyDataSubset13[charCols13], function(x) sum(x == "Unknown", na.rm=TRUE))
+charCols15 <- names(which(sapply(happyDataSubset15, is.numeric) == FALSE))
+sapply(happyDataSubset15[charCols15], function(x) sum(x == "Unknown", na.rm=TRUE))
+```
+
+
+Impute missing factor values with mode of the factor for each factor column. The function to calculate the mode in imputeUnknowns was taken from https://stackoverflow.com/questions/17374651/finding-the-most-common-elements-in-a-vector-in-r.
+```{r}
+# Function to impute missing values in a column with the mode of the column
+# Inputs: dataframe, list of char/factor columns
+# Output: dataframe
+imputeMissingFactor <- function(happyFrame, charCols) {
+  for (col in charCols) {
+    happyFrame[is.na(happyFrame[,col]), col] <- names(sort(table(happyFrame[col]),decreasing=TRUE))[1]
+    happyFrame[happyFrame[,col] == "Unknown", col] <- names(sort(table(happyFrame[col]),decreasing=TRUE))[1]
+  }
+  happyFrame
+}
+
+happyDataSubset11 <- imputeMissingFactor(happyDataSubset11, charCols11)
+happyDataSubset13 <- imputeMissingFactor(happyDataSubset13, charCols13)
+happyDataSubset15 <- imputeMissingFactor(happyDataSubset15, charCols15)
+```
+
+Some numeric columns were found to have a survey repsonse ranging from 0-5 instead of 0-10. In order to have all numeric columns on the same scale, these half scaled columns are multiplied by 2.
+```{r}
+# Function to upscale a column by a factor of two
+# Inputs: DataFrame, list of columns to be scaled
+# Outputs: DataFrame
+upscaler <- function(happyFrame, halfCols) {
+  for (col in halfCols) {
+    happyFrame[,col] <-  happyFrame[,col] * 2
+  }
+  happyFrame
+}
+
+fiveMaxCols11 <- names(which(sapply(happyDataSubset11, function(x) max(x) == 5.0) == TRUE))
+happyDataSubset11 <- upscaler(happyDataSubset11, fiveMaxCols11)
+
+fiveMaxCols13 <- names(which(sapply(happyDataSubset13, function(x) max(x) == 5.0) == TRUE))
+happyDataSubset13 <- upscaler(happyDataSubset13, fiveMaxCols13)
+
+fiveMaxCols15 <- names(which(sapply(happyDataSubset15, function(x) max(x) == 5.0) == TRUE))
+happyDataSubset15 <- upscaler(happyDataSubset15, fiveMaxCols15)
+```
+
+Print the final dataFrames and write to a csv file.
+```{r}
+happyDataSubset11
+happyDataSubset13
+happyDataSubset15
+write.csv(happyDataSubset11, file="C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData11.csv", row.names=FALSE)
+write.csv(happyDataSubset13, file="C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData13.csv", row.names=FALSE)
+write.csv(happyDataSubset15, file="C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData15.csv", row.names=FALSE)
+```

@@ -1,0 +1,141 @@
+---
+title: "Final Project Analysis Regression"
+output: html_notebook
+author: "Jason Booth"
+---
+
+
+The first analysis step is to analyze responses to the how_satisfied_are_you_with_your_life_in_general survey question using regression models to see what sorts of factors in the data are statistically significant in determining these scores. Fitting of regression parameters will be used to reduce features in the model to only those which are statistically significant. The model will be assessed in terms of MSE, R-squared, and F-score. This regression will be run on the dataFrames from 2013 and 2015 to see if there are any trends that can be seen over time. Lastly, to add another comparison a dataset from Kaggle which contains the most immportant factors of happiness within countries from around the world will be read in and compared to the results.
+
+Read in the data from CSV files. The ward and precinct files are treated as doubles when read in, so they need to be explicitly converted to factors.
+```{r}
+happyData13 <- read.csv("C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData13.csv")
+happyData15 <- read.csv("C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\CleanData\\CleanHappyData15.csv")
+happyData13$ward <- as.factor(happyData13$ward)
+happyData15$ward <- as.factor(happyData15$ward)
+
+happyData13
+happyData15
+```
+
+The surveys for 2013 and 2015 are more similar to each other than with the survey from 2011. Using the intersect function below there are 16 overlapping categories. We'll only use only these features in the multiple regression so that we can compare the two surveys.
+```{r}
+commonCols <- intersect(colnames(happyData13), colnames(happyData15))
+happyData13Common <- subset(happyData13, select = commonCols)
+happyData15Common <- subset(happyData15, select = commonCols)
+commonCols
+```
+
+Use the pairs.panels function from the psych package to plot the data and to see if there are any correlations between variables before running the model. Multiple regression assumes that there is no strong correlation between features because this can cause a situation where the significance of a variable is shared between two features. how_satisfied_are_you_with_your_life_in_general is removed from the pairs.panels analysis because that is the feature we are performing the regression on.
+```{r}
+# Commented out for the graders convenience
+# install.packages("psych")
+library(psych)
+happyData13NumericFeatures <- happyData13Common[,which(sapply(happyData13Common, is.numeric) == TRUE)]
+happyData13NumericFeatures <- subset(happyData13NumericFeatures, select=-c(how_satisfied_are_you_with_your_life_in_general))
+pairs.panels(happyData13NumericFeatures)
+```
+
+There appears to be a correlation that exists for the column how_long_have_you_lived_here. An exploratory plot is used to determine its distribution. It is found not to be normal, which is another assumption of multiple regression, so this feature will not be used in the analysis. However, for the sake of exploraion, average responses by length of time spent in somerville is presented below. It does not appear to be statistically significant in determining the responses of the satisfaction and happiness questions.
+```{r}
+hist(happyData13Common$how_long_have_you_lived_here)
+aggregate(how_satisfied_are_you_with_your_life_in_general ~ how_long_have_you_lived_here, happyData13Common, mean)
+happyData13Common <- subset(happyData13Common, select=-c(how_long_have_you_lived_here))
+happyData13NumericFeatures <- subset(happyData13NumericFeatures, select=-c(how_long_have_you_lived_here))
+```
+
+There is still correlation that exists between how_satisfied_are_you_with_your_life_in_general and how_happy_do_you_feel_right_now. After plotting them, it appears that the distributions are both normal. These features are correlated which means that one must be removed before feeding the data to the model. how_satisfied_are_you_with_your_neighborhood is removed, and the pairs.panels is re-run to show that there is no strong correlation remaining.
+```{r}
+pairs.panels(happyData13NumericFeatures)
+hist(happyData13NumericFeatures$how_satisfied_are_you_with_somerville_as_a_place_to_live)
+hist(happyData13NumericFeatures$how_satisfied_are_you_with_your_neighborhood)
+cor(happyData13NumericFeatures$how_satisfied_are_you_with_somerville_as_a_place_to_live, happyData13NumericFeatures$how_satisfied_are_you_with_your_neighborhood)
+happyData13NumericFeatures <- subset(happyData13NumericFeatures, select = -c(how_satisfied_are_you_with_your_neighborhood))
+happyData13Common <- subset(happyData13Common, select = -c(how_satisfied_are_you_with_your_neighborhood))
+pairs.panels(happyData13NumericFeatures)
+```
+
+
+A model is created fitting all available features. The results of the regression show that the coefficient of several features are not significantly statistically different from 0. The features should be downselected and the regression should be run again.
+```{r}
+fit13AllHappy <- lm(how_satisfied_are_you_with_your_life_in_general ~ ., happyData13Common)
+summary(fit13AllHappy)
+```
+
+In the process of iteratively down-selecting to only statistically significant features, race was removed. The remaining features show that how_happy_do_you_feel_right_now and cost_of_housing have positive effects on the satisfaction level, while living in ward 5 have a negative effect. Also, annual_household_income was shown to have a positive impact, although this impact is not considered statistically significant.
+```{r}
+fit13SigHappy <- lm(how_satisfied_are_you_with_your_life_in_general ~ how_happy_do_you_feel_right_now + how_satisfied_are_you_with_the_beauty_or_physical_setting_of_your_neighborhood + cost_of_housing + ward + annual_household_income, happyData13Common)
+summary(fit13SigHappy)
+```
+
+
+
+This process is repeated for the data from 2015.
+
+Similar to above, the how_long_have_you_lived_here column does not appear normal and is correlated with other values. It is removed from the features dataframe.
+```{r}
+happyData15NumericFeatures <- happyData15Common[,which(sapply(happyData15Common, is.numeric) == TRUE)]
+happyData15NumericFeatures <- subset(happyData15NumericFeatures, select=-c(how_satisfied_are_you_with_your_life_in_general))
+
+pairs.panels(happyData15NumericFeatures)
+hist(happyData15NumericFeatures$how_long_have_you_lived_here)
+happyData15Common <- subset(happyData15Common, select=-c(how_long_have_you_lived_here))
+happyData15NumericFeatures <- subset(happyData15NumericFeatures, select=-c(how_long_have_you_lived_here))
+pairs.panels(happyData15NumericFeatures)
+```
+
+Correlation still exists between the two features how_satisfied_are_you_with_somerville_as_a_place_to_live and how_satisfied_are_you_with_your_neighborhood with a correlation of .75. Again, how_satisfied_are_you_with_your_neighborhood is removed.
+```{r}
+pairs.panels(happyData15NumericFeatures)
+hist(happyData15NumericFeatures$how_satisfied_are_you_with_somerville_as_a_place_to_live)
+hist(happyData15NumericFeatures$how_satisfied_are_you_with_your_neighborhood)
+cor(happyData15NumericFeatures$how_satisfied_are_you_with_somerville_as_a_place_to_live, happyData15NumericFeatures$how_satisfied_are_you_with_your_neighborhood)
+happyData15NumericFeatures <- subset(happyData15NumericFeatures, select = -c(how_satisfied_are_you_with_your_neighborhood))
+happyData15Common <- subset(happyData15Common, select = -c(how_satisfied_are_you_with_your_neighborhood))
+pairs.panels(happyData15NumericFeatures)
+```
+
+A linear model with all features is fit.
+```{r}
+happyData15Common
+fit15AllHappy <- lm(how_satisfied_are_you_with_your_life_in_general ~ ., happyData15Common)
+summary(fit15AllHappy)
+```
+
+After downselection it was found that age, being a student, and how_happy_do_you_feel_right_now had positive effects on the satisfaction score. Being a male had a negative effect. Being African American or Mixed also had a negative effect, although it is not considered statistically significant.
+```{r}
+mode(happyData15Common$ward)
+fit15SigHappy <- lm(how_satisfied_are_you_with_your_life_in_general ~ age + are_you_a_student + how_happy_do_you_feel_right_now + sex + race, happyData15Common)
+summary(fit15SigHappy)
+```
+
+
+Comparing the fit of the two models:
+
+These models are using different data so it would be inappropriate to compare them directly. But we can use MSE to see if they are a good fit for the model. Looking at the output of linear regression we see the p-values
+p-value: < 2.2e-16
+p-value: < 2.2e-16
+showing that the models are extremely statistically significant and there are relationships between variables. Calculating the MSE below can help us compare the spread of values around the correlation line.
+```{r}
+mean(fit13SigHappy$residuals^2)
+mean(fit15SigHappy$residuals^2)
+```
+
+Because the MSE is slightly higher for the first model, we can conclude that the interval of prediction will likely contain more variance that the model from 2015. Although it can't be seen explicitly, the confidence intervals for each feature below.
+```{r}
+confint(fit13SigHappy)
+confint(fit15SigHappy)
+```
+
+
+As a last exercise, another dataset from kaggle is pulled in and analyzed briefly. This dataset is from a worldwide census on happiness data. It consists of a list of countries and a list of factors questioned about in the survey. Each factor has a value corresponding to the significance of that value on the happiness of the country. To get a sense of the most important factors, I summed over each of the columns across all countries, and the converted each column's sum into a percentage of the total summation. This results in a percentage for how important each column is across countries.
+```{r}
+worldData <- read.csv("C:\\Users\\Jason\\Documents\\R_Notebooks\\FinalProject\\data\\WorldHappiness\\2015.csv")
+contributingFactorColumns <- c("Economy..GDP.per.Capita.", "Family", "Health..Life.Expectancy.", "Freedom", "Trust..Government.Corruption.", "Generosity")
+columnSignificance <- sort(colSums(worldData[contributingFactorColumns]), decreasing = TRUE)
+sapply(columnSignificance, function(x) x/sum(columnSignificance))
+```
+
+
+
+In 2013, general factors which were found to influence happiness included economic and geographic factors (cost of living and ward), whereas in 2015 personal attributes like age, being a student, and being female contributed more to satisfaction levels. From the world data in 2015, Family and economic standing seemed to be the most influential. All of these findings seem to make sense in the context of common perceptions of life satisfaction.
